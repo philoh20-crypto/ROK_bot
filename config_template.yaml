@@ -1,0 +1,199 @@
+# Rise of Kingdoms Bot Configuration File
+# Copy this to config.yaml and customize
+
+# ADB Connection Settings
+adb:
+  host: "127.0.0.1"
+  port: 5037
+  device_serial: null  # Auto-detect if null
+  
+# BlueStacks Settings
+bluestacks:
+  instance_name: "BlueStacks"
+  screen_resolution:
+    width: 1920
+    height: 1080
+
+# Task Configuration
+tasks:
+  # Resource Gathering
+  gathering:
+    enabled: true
+    resource_types:
+      - food
+      - wood
+      - stone
+      - gold
+    troop_count: 10000
+    priority: high
+    
+  # Troop Training
+  training:
+    enabled: true
+    troop_type: "infantry"  # infantry, cavalry, archer, siege
+    quantity: 100
+    auto_select_best: true
+    priority: medium
+    
+  # Building Upgrades
+  buildings:
+    enabled: true
+    follow_recommended: true
+    use_speedups: false
+    priority: medium
+    
+  # Research
+  research:
+    enabled: true
+    follow_recommended: true
+    use_speedups: false
+    priority: low
+    
+  # Barbarian Attacks
+  barbarians:
+    enabled: false
+    level: 1
+    attack_count: 5
+    use_action_points: true
+    priority: low
+    
+  # Troop Healing
+  healing:
+    enabled: true
+    auto_heal: true
+    use_speedups: false
+    priority: high
+    
+  # Alliance Help
+  alliance:
+    enabled: true
+    help_interval: 300  # seconds
+    priority: high
+    
+  # Daily Quests
+  quests:
+    enabled: true
+    auto_collect: true
+    priority: high
+    
+  # Chest Collection
+  chests:
+    enabled: true
+    collect_free: true
+    collect_vip: true
+    collect_daily: true
+    priority: high
+
+# Humanization Settings
+humanization:
+  # Action Timing
+  min_action_delay: 0.3  # seconds
+  max_action_delay: 1.5  # seconds
+  click_offset_radius: 5  # pixels
+  
+  # Break Patterns
+  actions_before_break:
+    min: 50
+    max: 100
+  break_duration:
+    min: 30  # seconds
+    max: 120  # seconds
+  
+  # Fatigue Simulation
+  enable_fatigue: true
+  fatigue_rate: 0.5  # Multiplier increase per hour
+  max_fatigue: 2.0  # Maximum slowdown
+  
+  # Random Actions
+  random_idle_chance: 0.05  # 5% chance
+  task_skip_chance: 0.1  # 10% chance
+
+# Session Management
+session:
+  duration:
+    min: 30  # minutes
+    max: 120  # minutes
+  break_between_sessions:
+    min: 10  # minutes
+    max: 120  # minutes
+  
+  # Safety Features
+  safe_mode: false
+  max_daily_runtime: 480  # minutes (8 hours)
+  
+# Image Recognition
+recognition:
+  default_threshold: 0.8
+  retry_attempts: 3
+  retry_delay: 1.0  # seconds
+  
+  # Template Matching
+  templates_dir: "templates"
+  confidence_levels:
+    high: 0.9
+    medium: 0.8
+    low: 0.7
+
+# Logging Configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_to_file: true
+  log_to_console: true
+  log_dir: "logs"
+  
+  # Statistics
+  track_statistics: true
+  auto_export_excel: true
+  export_interval: 3600  # seconds (1 hour)
+  
+  # Screenshot on Error
+  screenshot_on_error: true
+  screenshot_dir: "screenshots"
+
+# License Configuration
+license:
+  license_file: "license.key"
+  check_interval: 3600  # seconds (1 hour)
+  online_validation: false
+  server_url: null  # Set for online validation
+
+# Advanced Settings
+advanced:
+  # Performance
+  screenshot_cache_size: 10
+  image_processing_threads: 4
+  
+  # Error Handling
+  max_consecutive_errors: 5
+  error_recovery_delay: 30  # seconds
+  auto_restart_on_crash: true
+  
+  # Updates
+  check_for_updates: true
+  auto_download_templates: false
+  
+# Notifications (Future Feature)
+notifications:
+  enabled: false
+  discord_webhook: null
+  telegram_bot_token: null
+  telegram_chat_id: null
+  
+  # Events to notify
+  notify_on_error: true
+  notify_on_completion: false
+  notify_on_resource_full: false
+
+# Scheduler (Future Feature)
+scheduler:
+  enabled: false
+  schedules:
+    - name: "Morning Session"
+      days: ["monday", "tuesday", "wednesday", "thursday", "friday"]
+      start_time: "08:00"
+      duration: 60  # minutes
+      
+    - name: "Evening Session"
+      days: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+      start_time: "20:00"
+      duration: 90  # minutes

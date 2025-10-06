@@ -1,0 +1,71 @@
+# ============================
+# Rise of Kingdoms Bot Dependencies (unversioned)
+# ============================
+
+# --- ADB Communication ---
+pure-python-adb
+adb-shell
+
+# --- Image Processing & Computer Vision ---
+opencv-python
+numpy
+Pillow
+pytesseract
+scikit-image
+imutils
+
+# --- GUI Framework ---
+PyQt5
+PyQt5-Qt5
+PyQt5-sip
+pyqtgraph
+pySide6
+# --- Human-like Behavior ---
+pynput
+faker
+
+# --- Data Management ---
+pandas
+openpyxl
+
+# --- Logging & Monitoring ---
+colorlog
+psutil
+rich
+loguru
+
+# --- License & Security ---
+cryptography
+requests
+pyjwt
+
+# --- Configuration & Env ---
+pyyaml
+python-dotenv
+dynaconf
+
+# --- Scheduling & Retry ---
+schedule
+retrying
+tenacity
+
+# --- Build Tools ---
+pyinstaller
+auto-py-to-exe
+
+# --- Utilities ---
+python-dateutil
+tqdm
+click
+packaging
+
+# --- Platform Specific ---
+pywin32; sys_platform == "win32"
+python-xlib; sys_platform == "linux"
+
+# --- Developer / Debug Tools (optional) ---
+ipython
+black
+flake8
+pytest
+
