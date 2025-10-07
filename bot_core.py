@@ -21,6 +21,44 @@ from gui_logger import QTextEditLogger, LogViewer, setup_gui_logging, remove_gui
 logger = logging.getLogger(__name__)
 
 
+class ADBConnectionThread(QThread):
+    """Thread for ADB connection to prevent GUI freezing"""
+    connection_result = pyqtSignal(bool, str)  # success, message
+    devices_found = pyqtSignal(list)  # list of devices
+    
+    def __init__(self, adb_client, action="connect"):
+        super().__init__()
+        self.adb_client = adb_client
+        self.action = action
+        self.device_serial = None
+    
+    def run(self):
+        """Execute ADB connection operations in separate thread"""
+        try:
+            if self.action == "connect":
+                success = self.adb_client.connect()
+                if success:
+                    self.connection_result.emit(True, "Connected to ADB server")
+                else:
+                    self.connection_result.emit(False, "Failed to connect to ADB server")
+            
+            elif self.action == "refresh_devices":
+                if not self.adb_client.client:
+                    self.adb_client.connect()
+                devices = self.adb_client.get_devices()
+                self.devices_found.emit(devices)
+            
+            elif self.action == "select_device":
+                success = self.adb_client.select_device(self.device_serial)
+                if success:
+                    self.connection_result.emit(True, f"Connected to device {self.device_serial}")
+                else:
+                    self.connection_result.emit(False, "Failed to connect to device")
+        
+        except Exception as e:
+            self.connection_result.emit(False, f"Error: {str(e)}")
+
+
 class BotCore:
     """Main bot controller and orchestrator"""
     
@@ -37,31 +75,49 @@ class BotCore:
         self.paused = False
         self.current_task: Optional[TaskType] = None
         
-        # Task configuration
+        # Task configuration with detailed settings
         self.enabled_tasks: Dict[TaskType, bool] = {
             TaskType.GATHER_RESOURCES: True,
             TaskType.TRAIN_TROOPS: True,
             TaskType.UPGRADE_BUILDINGS: True,
             TaskType.RESEARCH_TECH: True,
-            TaskType.ATTACK_BARBARIANS: False,  # Disabled by default for safety
+            TaskType.ATTACK_BARBARIANS: False,
             TaskType.HEAL_TROOPS: True,
             TaskType.ALLIANCE_HELP: True,
             TaskType.COLLECT_CHESTS: True,
-            TaskType.DAILY_QUESTS: True
+            TaskType.DAILY_QUESTS: True,
+            TaskType.NEW_PLAYER_TUTORIAL: False,
+            TaskType.EXPLORE_FOG: False,
+            TaskType.GATHER_GEMS: False
         }
         
         self.task_settings: Dict[str, Dict] = {
             "gathering": {
                 "resource_types": ["food", "wood", "stone", "gold"],
-                "troop_count": 10000
+                "troop_count": 10000,
+                "gather_gems": False
             },
             "training": {
                 "troop_type": "infantry",
-                "quantity": 100
+                "quantity": 100,
+                "continuous": True
+            },
+            "buildings": {
+                "target_level": 25,
+                "focus_town_hall": True,
+                "upgrade_priority": ["town_hall", "academy", "barracks", "training_grounds"]
             },
             "barbarians": {
                 "level": 1,
                 "attack_count": 5
+            },
+            "exploration": {
+                "explore_fog": False,
+                "max_scouts": 3
+            },
+            "tutorial": {
+                "auto_complete": False,
+                "skip_animations": True
             }
         }
     
@@ -245,6 +301,15 @@ class BotCore:
         elif task_type == TaskType.DAILY_QUESTS:
             return DailyQuestsTask(self)
         
+        elif task_type == TaskType.NEW_PLAYER_TUTORIAL:
+            return NewPlayerTutorialTask(self)
+        
+        elif task_type == TaskType.EXPLORE_FOG:
+            return ExploreFogTask(self)
+        
+        elif task_type == TaskType.GATHER_GEMS:
+            return GatherGemsTask(self)
+        
         return None
     
     def set_task_enabled(self, task_type: TaskType, enabled: bool):
@@ -268,12 +333,28 @@ class BotGUI(QMainWindow):
         self.bot = BotCore()
         self.bot_thread: Optional[BotThread] = None
         self.gui_logger_handler: Optional[QTextEditLogger] = None
+        self.update_timer: Optional[QTimer] = None
+        self.adb_thread: Optional[ADBConnectionThread] = None
         self.init_ui()
+        self.setup_logging()
+        self.setup_timers()
+    
+    def setup_logging(self):
+        """Setup GUI logging system"""
+        self.gui_logger_handler = setup_gui_logging(self.log_viewer)
+        logger.info("GUI logging system initialized")
+    
+    def setup_timers(self):
+        """Setup periodic update timers"""
+        # Timer for updating statistics and status
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self.update_status)
+        self.update_timer.start(1000)  # Update every second
     
     def init_ui(self):
         """Initialize user interface components"""
         self.setWindowTitle("Rise of Kingdoms Bot v1.0")
-        self.setGeometry(100, 100, 900, 700)
+        self.setGeometry(100, 100, 1200, 800)
         
         # Central widget
         central_widget = QWidget()
@@ -286,27 +367,80 @@ class BotGUI(QMainWindow):
         # Header section
         header_layout = QHBoxLayout()
         title_label = QLabel("🏰 Rise of Kingdoms Bot")
-        title_label.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50;")
+        title_label.setStyleSheet("font-size: 28px; font-weight: bold; color: #2c3e50;")
         header_layout.addWidget(title_label)
         header_layout.addStretch()
         
         # License information button
         license_btn = QPushButton("📄 License Info")
+        license_btn.setMinimumSize(120, 40)
         license_btn.clicked.connect(self.show_license_info)
         header_layout.addWidget(license_btn)
         
         main_layout.addLayout(header_layout)
         main_layout.addWidget(QLabel(""))  # Spacer
         
-        # Tab widget for different sections
-        tabs = QTabWidget()
-        tabs.addTab(self.create_main_tab(), "Main Control")
-        tabs.addTab(self.create_tasks_tab(), "Tasks Configuration")
-        tabs.addTab(self.create_settings_tab(), "Settings")
-        tabs.addTab(self.create_statistics_tab(), "Statistics")
-        tabs.addTab(self.create_logs_tab(), "Logs")
+        # Create main content with tasks and logs side by side
+        content_splitter = QSplitter(Qt.Horizontal)
         
-        main_layout.addWidget(tabs)
+        # Left side - Control and Tasks
+        left_widget = QWidget()
+        left_layout = QVBoxLayout()
+        left_widget.setLayout(left_layout)
+        
+        # Connection group
+        conn_group = self.create_connection_group()
+        left_layout.addWidget(conn_group)
+        
+        # Control buttons
+        control_group = self.create_control_group()
+        left_layout.addWidget(control_group)
+        
+        # Status display
+        status_group = self.create_status_group()
+        left_layout.addWidget(status_group)
+        
+        # Tasks configuration
+        tasks_group = self.create_tasks_group()
+        left_layout.addWidget(tasks_group)
+        
+        left_layout.addStretch()
+        
+        # Right side - Logs
+        right_widget = QWidget()
+        right_layout = QVBoxLayout()
+        right_widget.setLayout(right_layout)
+        
+        log_label = QLabel("📋 Bot Logs")
+        log_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        right_layout.addWidget(log_label)
+        
+        self.log_viewer = LogViewer()
+        right_layout.addWidget(self.log_viewer)
+        
+        # Log control buttons
+        log_buttons = QHBoxLayout()
+        clear_logs_btn = QPushButton("🗑️ Clear")
+        clear_logs_btn.setMinimumHeight(35)
+        clear_logs_btn.clicked.connect(self.clear_logs)
+        
+        save_logs_btn = QPushButton("💾 Save")
+        save_logs_btn.setMinimumHeight(35)
+        save_logs_btn.clicked.connect(self.save_logs)
+        
+        log_buttons.addWidget(clear_logs_btn)
+        log_buttons.addWidget(save_logs_btn)
+        log_buttons.addStretch()
+        
+        right_layout.addLayout(log_buttons)
+        
+        # Add to splitter
+        content_splitter.addWidget(left_widget)
+        content_splitter.addWidget(right_widget)
+        content_splitter.setStretchFactor(0, 1)
+        content_splitter.setStretchFactor(1, 1)
+        
+        main_layout.addWidget(content_splitter)
         
         # Status bar
         self.statusBar().showMessage("Ready to initialize")
@@ -320,9 +454,10 @@ class BotGUI(QMainWindow):
                 background-color: #3498db;
                 color: white;
                 border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
+                padding: 10px 20px;
+                border-radius: 6px;
                 font-size: 14px;
+                font-weight: bold;
             }
             QPushButton:hover {
                 background-color: #2980b9;
@@ -330,54 +465,111 @@ class BotGUI(QMainWindow):
             QPushButton:disabled {
                 background-color: #95a5a6;
             }
+            QPushButton:pressed {
+                background-color: #21618c;
+            }
             QGroupBox {
                 font-weight: bold;
+                font-size: 14px;
                 border: 2px solid #bdc3c7;
-                border-radius: 5px;
-                margin-top: 10px;
-                padding-top: 10px;
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 15px;
+                background-color: white;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
+                left: 15px;
+                padding: 0 8px;
+                color: #2c3e50;
+            }
+            QLabel {
+                color: #2c3e50;
+            }
+            QComboBox, QSpinBox, QDoubleSpinBox {
+                padding: 5px;
+                border: 1px solid #bdc3c7;
+                border-radius: 4px;
+                min-height: 25px;
             }
         """)
     
-    def create_main_tab(self):
-        """Create main control tab with connection and bot controls"""
-        tab = QWidget()
-        layout = QVBoxLayout()
-        
-        # Connection group
-        conn_group = QGroupBox("Device Connection")
+    def create_connection_group(self):
+        """Create connection control group"""
+        conn_group = QGroupBox("🔌 Connection")
         conn_layout = QVBoxLayout()
         
         self.device_combo = QComboBox()
-        self.refresh_devices_btn = QPushButton("🔄 Refresh Devices")
-        self.refresh_devices_btn.clicked.connect(self.refresh_devices)
-        self.connect_btn = QPushButton("🔌 Connect to Device")
-        self.connect_btn.clicked.connect(self.connect_device)
+        self.device_combo.setMinimumHeight(35)
         
-        conn_layout.addWidget(QLabel("Select Device:"))
+        btn_layout = QHBoxLayout()
+        
+        self.refresh_devices_btn = QPushButton("🔄 Refresh")
+        self.refresh_devices_btn.setMinimumSize(100, 45)
+        self.refresh_devices_btn.clicked.connect(self.refresh_devices)
+        
+        self.connect_btn = QPushButton("🔌 Connect")
+        self.connect_btn.setMinimumSize(100, 45)
+        self.connect_btn.clicked.connect(self.connect_device)
+        self.connect_btn.setEnabled(False)
+        
+        btn_layout.addWidget(self.refresh_devices_btn)
+        btn_layout.addWidget(self.connect_btn)
+        
+        conn_layout.addWidget(QLabel("BlueStacks Device:"))
         conn_layout.addWidget(self.device_combo)
-        conn_layout.addWidget(self.refresh_devices_btn)
-        conn_layout.addWidget(self.connect_btn)
+        conn_layout.addLayout(btn_layout)
         conn_group.setLayout(conn_layout)
         
-        # Bot control buttons
-        control_group = QGroupBox("Bot Control")
+        return conn_group
+    
+    def create_control_group(self):
+        """Create bot control group"""
+        control_group = QGroupBox("🎮 Bot Control")
         control_layout = QHBoxLayout()
         
-        self.start_btn = QPushButton("▶️ Start Bot")
+        self.start_btn = QPushButton("▶️ START")
+        self.start_btn.setMinimumSize(120, 60)
+        self.start_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                background-color: #229954;
+            }
+            QPushButton:disabled {
+                background-color: #95a5a6;
+            }
+        """)
         self.start_btn.clicked.connect(self.start_bot)
         self.start_btn.setEnabled(False)
         
-        self.pause_btn = QPushButton("⏸️ Pause Bot")
+        self.pause_btn = QPushButton("⏸️ PAUSE")
+        self.pause_btn.setMinimumSize(120, 60)
+        self.pause_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f39c12;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                background-color: #e67e22;
+            }
+        """)
         self.pause_btn.clicked.connect(self.pause_bot)
         self.pause_btn.setEnabled(False)
         
-        self.stop_btn = QPushButton("⏹️ Stop Bot")
+        self.stop_btn = QPushButton("⏹️ STOP")
+        self.stop_btn.setMinimumSize(120, 60)
+        self.stop_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                background-color: #c0392b;
+            }
+        """)
         self.stop_btn.clicked.connect(self.stop_bot)
         self.stop_btn.setEnabled(False)
         
@@ -386,14 +578,24 @@ class BotGUI(QMainWindow):
         control_layout.addWidget(self.stop_btn)
         control_group.setLayout(control_layout)
         
-        # Status display
-        status_group = QGroupBox("Current Status")
+        return control_group
+    
+    def create_status_group(self):
+        """Create status display group"""
+        status_group = QGroupBox("📊 Status")
         status_layout = QVBoxLayout()
         
         self.status_label = QLabel("Status: Not Connected")
+        self.status_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #e74c3c;")
+        
         self.current_task_label = QLabel("Current Task: None")
-        self.actions_label = QLabel("Actions Completed: 0")
+        self.current_task_label.setStyleSheet("font-size: 13px;")
+        
+        self.actions_label = QLabel("Actions: 0")
+        self.actions_label.setStyleSheet("font-size: 13px;")
+        
         self.uptime_label = QLabel("Uptime: 00:00:00")
+        self.uptime_label.setStyleSheet("font-size: 13px;")
         
         status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.current_task_label)
@@ -401,266 +603,202 @@ class BotGUI(QMainWindow):
         status_layout.addWidget(self.uptime_label)
         status_group.setLayout(status_layout)
         
-        # Quick actions
-        quick_group = QGroupBox("Quick Actions")
-        quick_layout = QHBoxLayout()
-        
-        self.screenshot_btn = QPushButton("📸 Take Screenshot")
-        self.screenshot_btn.clicked.connect(self.take_screenshot)
-        
-        self.restart_game_btn = QPushButton("🔄 Restart Game")
-        self.restart_game_btn.clicked.connect(self.restart_game)
-        
-        quick_layout.addWidget(self.screenshot_btn)
-        quick_layout.addWidget(self.restart_game_btn)
-        quick_group.setLayout(quick_layout)
-        
-        # Add all groups to main layout
-        layout.addWidget(conn_group)
-        layout.addWidget(control_group)
-        layout.addWidget(status_group)
-        layout.addWidget(quick_group)
-        layout.addStretch()
-        
-        tab.setLayout(layout)
-        return tab
+        return status_group
     
-    def create_tasks_tab(self):
-        """Create tasks configuration tab with task-specific settings"""
-        tab = QWidget()
-        layout = QVBoxLayout()
-        
-        # Task checkboxes
-        tasks_group = QGroupBox("Enabled Tasks")
+    def create_tasks_group(self):
+        """Create tasks configuration group"""
+        tasks_group = QGroupBox("⚙️ Task Configuration")
         tasks_layout = QVBoxLayout()
         
+        # Scroll area for tasks
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumHeight(300)
+        
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout()
+        
         self.task_checkboxes: Dict[TaskType, QCheckBox] = {}
-        for task_type in TaskType:
-            checkbox = QCheckBox(task_type.value.replace("_", " ").title())
+        
+        # Basic tasks
+        basic_label = QLabel("Basic Tasks:")
+        basic_label.setStyleSheet("font-weight: bold; color: #2980b9;")
+        scroll_layout.addWidget(basic_label)
+        
+        basic_tasks = [
+            (TaskType.GATHER_RESOURCES, "Gather Resources"),
+            (TaskType.TRAIN_TROOPS, "Train Troops"),
+            (TaskType.UPGRADE_BUILDINGS, "Upgrade Buildings"),
+            (TaskType.RESEARCH_TECH, "Research Technology"),
+            (TaskType.HEAL_TROOPS, "Heal Troops"),
+            (TaskType.ALLIANCE_HELP, "Alliance Help"),
+            (TaskType.COLLECT_CHESTS, "Collect Chests"),
+            (TaskType.DAILY_QUESTS, "Daily Quests"),
+        ]
+        
+        for task_type, label in basic_tasks:
+            checkbox = QCheckBox(label)
             checkbox.setChecked(self.bot.enabled_tasks.get(task_type, False))
+            checkbox.setStyleSheet("font-size: 12px;")
             checkbox.stateChanged.connect(
                 lambda state, t=task_type: self.bot.set_task_enabled(t, state == Qt.Checked)
             )
             self.task_checkboxes[task_type] = checkbox
-            tasks_layout.addWidget(checkbox)
+            scroll_layout.addWidget(checkbox)
+        
+        scroll_layout.addSpacing(10)
+        
+        # Advanced tasks
+        advanced_label = QLabel("Advanced Tasks:")
+        advanced_label.setStyleSheet("font-weight: bold; color: #8e44ad;")
+        scroll_layout.addWidget(advanced_label)
+        
+        advanced_tasks = [
+            (TaskType.ATTACK_BARBARIANS, "Attack Barbarians"),
+            (TaskType.NEW_PLAYER_TUTORIAL, "New Player Tutorial"),
+            (TaskType.EXPLORE_FOG, "Explore Fog"),
+            (TaskType.GATHER_GEMS, "Gather Gems"),
+        ]
+        
+        for task_type, label in advanced_tasks:
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(self.bot.enabled_tasks.get(task_type, False))
+            checkbox.setStyleSheet("font-size: 12px;")
+            checkbox.stateChanged.connect(
+                lambda state, t=task_type: self.bot.set_task_enabled(t, state == Qt.Checked)
+            )
+            self.task_checkboxes[task_type] = checkbox
+            scroll_layout.addWidget(checkbox)
+        
+        scroll_layout.addStretch()
+        
+        # Building upgrade config
+        scroll_layout.addSpacing(15)
+        building_label = QLabel("Building Settings:")
+        building_label.setStyleSheet("font-weight: bold; color: #16a085;")
+        scroll_layout.addWidget(building_label)
+        
+        level_layout = QHBoxLayout()
+        level_layout.addWidget(QLabel("Target Level:"))
+        self.target_level_spin = QSpinBox()
+        self.target_level_spin.setRange(1, 25)
+        self.target_level_spin.setValue(self.bot.task_settings["buildings"]["target_level"])
+        level_layout.addWidget(self.target_level_spin)
+        scroll_layout.addLayout(level_layout)
+        
+        self.focus_th_check = QCheckBox("Focus on Town Hall")
+        self.focus_th_check.setChecked(self.bot.task_settings["buildings"]["focus_town_hall"])
+        scroll_layout.addWidget(self.focus_th_check)
+        
+        scroll_widget.setLayout(scroll_layout)
+        scroll.setWidget(scroll_widget)
+        
+        tasks_layout.addWidget(scroll)
+        
+        # Save button
+        save_btn = QPushButton("💾 Save Configuration")
+        save_btn.setMinimumHeight(40)
+        save_btn.clicked.connect(self.save_task_settings)
+        tasks_layout.addWidget(save_btn)
         
         tasks_group.setLayout(tasks_layout)
-        
-        # Gathering settings
-        gather_group = QGroupBox("Gathering Settings")
-        gather_layout = QFormLayout()
-        
-        self.resource_checks: Dict[str, QCheckBox] = {}
-        for resource in ["food", "wood", "stone", "gold"]:
-            check = QCheckBox()
-            check.setChecked(True)
-            self.resource_checks[resource] = check
-            gather_layout.addRow(resource.capitalize() + ":", check)
-        
-        gather_group.setLayout(gather_layout)
-        
-        # Training settings
-        train_group = QGroupBox("Training Settings")
-        train_layout = QFormLayout()
-        
-        self.troop_type_combo = QComboBox()
-        self.troop_type_combo.addItems(["infantry", "cavalry", "archer", "siege"])
-        
-        self.troop_quantity_spin = QSpinBox()
-        self.troop_quantity_spin.setRange(1, 10000)
-        self.troop_quantity_spin.setValue(100)
-        
-        train_layout.addRow("Troop Type:", self.troop_type_combo)
-        train_layout.addRow("Quantity:", self.troop_quantity_spin)
-        train_group.setLayout(train_layout)
-        
-        # Barbarian settings
-        barb_group = QGroupBox("Barbarian Attack Settings")
-        barb_layout = QFormLayout()
-        
-        self.barb_level_spin = QSpinBox()
-        self.barb_level_spin.setRange(1, 50)
-        self.barb_level_spin.setValue(1)
-        
-        self.barb_count_spin = QSpinBox()
-        self.barb_count_spin.setRange(1, 20)
-        self.barb_count_spin.setValue(5)
-        
-        barb_layout.addRow("Barbarian Level:", self.barb_level_spin)
-        barb_layout.addRow("Attack Count:", self.barb_count_spin)
-        barb_group.setLayout(barb_layout)
-        
-        # Save settings button
-        save_btn = QPushButton("💾 Save Task Settings")
-        save_btn.clicked.connect(self.save_task_settings)
-        
-        # Add all groups to layout
-        layout.addWidget(tasks_group)
-        layout.addWidget(gather_group)
-        layout.addWidget(train_group)
-        layout.addWidget(barb_group)
-        layout.addWidget(save_btn)
-        layout.addStretch()
-        
-        tab.setLayout(layout)
-        return tab
+        return tasks_group
     
-    def create_settings_tab(self):
-        """Create settings tab with bot behavior configuration"""
-        tab = QWidget()
-        layout = QVBoxLayout()
-        
-        # Humanization settings
-        human_group = QGroupBox("Humanization Settings")
-        human_layout = QFormLayout()
-        
-        self.min_delay_spin = QDoubleSpinBox()
-        self.min_delay_spin.setRange(0.1, 5.0)
-        self.min_delay_spin.setValue(0.3)
-        self.min_delay_spin.setSingleStep(0.1)
-        
-        self.max_delay_spin = QDoubleSpinBox()
-        self.max_delay_spin.setRange(0.5, 10.0)
-        self.max_delay_spin.setValue(1.5)
-        self.max_delay_spin.setSingleStep(0.1)
-        
-        human_layout.addRow("Minimum Action Delay (s):", self.min_delay_spin)
-        human_layout.addRow("Maximum Action Delay (s):", self.max_delay_spin)
-        human_group.setLayout(human_layout)
-        
-        # Session settings
-        session_group = QGroupBox("Session Settings")
-        session_layout = QFormLayout()
-        
-        self.session_duration_spin = QSpinBox()
-        self.session_duration_spin.setRange(30, 300)
-        self.session_duration_spin.setValue(90)
-        self.session_duration_spin.setSuffix(" minutes")
-        
-        self.break_duration_spin = QSpinBox()
-        self.break_duration_spin.setRange(10, 180)
-        self.break_duration_spin.setValue(30)
-        self.break_duration_spin.setSuffix(" minutes")
-        
-        session_layout.addRow("Session Duration:", self.session_duration_spin)
-        session_layout.addRow("Break Duration:", self.break_duration_spin)
-        session_group.setLayout(session_layout)
-        
-        # Advanced settings
-        advanced_group = QGroupBox("Advanced Settings")
-        advanced_layout = QVBoxLayout()
-        
-        self.safe_mode_check = QCheckBox("Safe Mode (Extra Delays and Precautions)")
-        self.safe_mode_check.setChecked(False)
-        
-        self.screenshot_on_error_check = QCheckBox("Take Screenshot on Errors")
-        self.screenshot_on_error_check.setChecked(True)
-        
-        advanced_layout.addWidget(self.safe_mode_check)
-        advanced_layout.addWidget(self.screenshot_on_error_check)
-        advanced_group.setLayout(advanced_layout)
-        
-        # Save settings button
-        save_btn = QPushButton("💾 Save General Settings")
-        save_btn.clicked.connect(self.save_general_settings)
-        
-        layout.addWidget(human_group)
-        layout.addWidget(session_group)
-        layout.addWidget(advanced_group)
-        layout.addWidget(save_btn)
-        layout.addStretch()
-        
-        tab.setLayout(layout)
-        return tab
-    
-    def create_statistics_tab(self):
-        """Create statistics tab with session performance data"""
-        tab = QWidget()
-        layout = QVBoxLayout()
-        
-        # Statistics display
-        self.stats_text = QTextEdit()
-        self.stats_text.setReadOnly(True)
-        
-        # Refresh and export buttons
-        refresh_btn = QPushButton("🔄 Refresh Statistics")
-        refresh_btn.clicked.connect(self.refresh_statistics)
-        
-        export_btn = QPushButton("📊 Export to Excel")
-        export_btn.clicked.connect(self.export_statistics)
-        
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(refresh_btn)
-        button_layout.addWidget(export_btn)
-        
-        layout.addWidget(QLabel("Session Statistics:"))
-        layout.addWidget(self.stats_text)
-        layout.addLayout(button_layout)
-        
-        tab.setLayout(layout)
-        return tab
-    
-    def create_logs_tab(self):
-        """Create logs tab with console output"""
-        tab = QWidget()
-        layout = QVBoxLayout()
-        
-        # Log display
-        self.log_text = LogViewer()
-        self.log_text.setReadOnly(True)
-        
-        # Setup GUI logging
-        self.gui_logger_handler = setup_gui_logging(self.log_text)
-        
-        # Clear logs button
-        clear_btn = QPushButton("🗑️ Clear Logs")
-        clear_btn.clicked.connect(self.clear_logs)
-        
-        layout.addWidget(QLabel("Console Logs:"))
-        layout.addWidget(self.log_text)
-        layout.addWidget(clear_btn)
-        
-        tab.setLayout(layout)
-        return tab
-    
-    # Button handler methods
     def refresh_devices(self):
-        """Refresh the list of available ADB devices"""
+        """Refresh the list of available ADB devices using thread"""
+        self.refresh_devices_btn.setEnabled(False)
+        self.refresh_devices_btn.setText("⏳ Refreshing...")
+        self.statusBar().showMessage("Connecting to ADB server...")
+        
+        self.adb_thread = ADBConnectionThread(self.bot.adb, "refresh_devices")
+        self.adb_thread.devices_found.connect(self.on_devices_found)
+        self.adb_thread.connection_result.connect(self.on_connection_result)
+        self.adb_thread.finished.connect(lambda: self.refresh_devices_btn.setEnabled(True))
+        self.adb_thread.start()
+    
+    def on_devices_found(self, devices):
+        """Handle devices found signal"""
         self.device_combo.clear()
-        if self.bot.adb.connect():
-            devices = self.bot.adb.get_devices()
-            for device in devices:
-                self.device_combo.addItem(device.serial)
-            device_count = len(devices)
-            self.statusBar().showMessage(f"Found {device_count} device(s)")
+        for device in devices:
+            self.device_combo.addItem(device.serial)
+        
+        if devices:
+            self.connect_btn.setEnabled(True)
+            self.statusBar().showMessage(f"Found {len(devices)} device(s)")
+            logger.info(f"Found {len(devices)} BlueStacks device(s)")
         else:
-            self.statusBar().showMessage("Failed to connect to ADB server")
+            self.connect_btn.setEnabled(False)
+            self.statusBar().showMessage("No devices found")
+            logger.warning("No devices found. Is BlueStacks running with ADB enabled?")
+        
+        self.refresh_devices_btn.setText("🔄 Refresh")
+    
+    def on_connection_result(self, success, message):
+        """Handle connection result signal"""
+        if success:
+            self.statusBar().showMessage(message)
+            logger.info(message)
+        else:
+            self.statusBar().showMessage(message)
+            logger.error(message)
+            QMessageBox.warning(self, "Connection Error", message)
     
     def connect_device(self):
-        """Connect to the selected ADB device"""
+        """Connect to selected device using thread"""
+        selected_serial = self.device_combo.currentText()
+        if not selected_serial:
+            QMessageBox.warning(self, "No Device", "Please select a device first")
+            return
+        
         # Check license validity first
         if not self.bot.check_license():
             QMessageBox.critical(self, "License Error", 
                                "Invalid or expired license! Please activate a valid license.")
             return
         
-        # Initialize bot and connect to device
-        if self.bot.initialize():
+        self.connect_btn.setEnabled(False)
+        self.connect_btn.setText("⏳ Connecting...")
+        self.statusBar().showMessage("Connecting to device...")
+        
+        self.adb_thread = ADBConnectionThread(self.bot.adb, "select_device")
+        self.adb_thread.device_serial = selected_serial
+        self.adb_thread.connection_result.connect(self.on_device_connected)
+        self.adb_thread.finished.connect(lambda: self.connect_btn.setEnabled(True))
+        self.adb_thread.start()
+    
+    def on_device_connected(self, success, message):
+        """Handle device connection result"""
+        self.connect_btn.setText("🔌 Connect")
+        
+        if success:
+            # Get screen resolution
+            width, height = self.bot.adb.get_screen_resolution()
+            self.bot.coord_mapper.set_current_resolution(width, height)
+            logger.info(f"Screen resolution: {width}x{height}")
+            
+            # Start app if not running
+            if not self.bot.adb.is_app_running():
+                logger.info("Starting Rise of Kingdoms...")
+                self.bot.adb.start_app()
+            
             self.start_btn.setEnabled(True)
-            self.status_label.setText("Status: Connected to Device")
-            self.statusBar().showMessage("Successfully connected to BlueStacks device")
-            QMessageBox.information(self, "Connection Success", 
-                                  "Successfully connected to BlueStacks device!")
+            self.status_label.setText("Status: Connected ✓")
+            self.status_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #27ae60;")
+            self.statusBar().showMessage(message)
+            logger.info("Bot ready to start!")
+            QMessageBox.information(self, "Success", "Connected to BlueStacks successfully!")
         else:
-            QMessageBox.critical(self, "Connection Error", 
-                               "Failed to connect to device. Please check your BlueStacks installation.")
+            self.status_label.setText("Status: Connection Failed ✗")
+            self.status_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #e74c3c;")
+            self.statusBar().showMessage(message)
+            QMessageBox.critical(self, "Error", message)
     
     def start_bot(self):
         """Start the bot execution"""
         self.start_btn.setEnabled(False)
         self.pause_btn.setEnabled(True)
         self.stop_btn.setEnabled(True)
-        self.status_label.setText("Status: Bot Running")
+        self.status_label.setText("Status: Running")
         
         # Start bot in separate thread
         self.bot_thread = BotThread(self.bot)
@@ -672,13 +810,13 @@ class BotGUI(QMainWindow):
         """Pause or resume bot execution"""
         if self.bot.paused:
             self.bot.resume()
-            self.pause_btn.setText("⏸️ Pause Bot")
-            self.status_label.setText("Status: Bot Running")
+            self.pause_btn.setText("⏸️ PAUSE")
+            self.status_label.setText("Status: Running")
             self.statusBar().showMessage("Bot execution resumed")
         else:
             self.bot.pause()
-            self.pause_btn.setText("▶️ Resume Bot")
-            self.status_label.setText("Status: Bot Paused")
+            self.pause_btn.setText("▶️ RESUME")
+            self.status_label.setText("Status: Paused")
             self.statusBar().showMessage("Bot execution paused")
     
     def stop_bot(self):
@@ -687,7 +825,7 @@ class BotGUI(QMainWindow):
         self.start_btn.setEnabled(True)
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
-        self.status_label.setText("Status: Bot Stopped")
+        self.status_label.setText("Status: Stopped")
         self.statusBar().showMessage("Bot execution stopped")
     
     def take_screenshot(self):
@@ -711,83 +849,51 @@ class BotGUI(QMainWindow):
     
     def save_task_settings(self):
         """Save task-specific configuration settings"""
-        # Update gathering settings
-        resources = [resource for resource, check in self.resource_checks.items() 
-                    if check.isChecked()]
-        self.bot.task_settings["gathering"]["resource_types"] = resources
+        # Update building settings
+        self.bot.task_settings["buildings"]["target_level"] = self.target_level_spin.value()
+        self.bot.task_settings["buildings"]["focus_town_hall"] = self.focus_th_check.isChecked()
         
-        # Update training settings
-        self.bot.task_settings["training"]["troop_type"] = self.troop_type_combo.currentText()
-        self.bot.task_settings["training"]["quantity"] = self.troop_quantity_spin.value()
-        
-        # Update barbarian settings
-        self.bot.task_settings["barbarians"]["level"] = self.barb_level_spin.value()
-        self.bot.task_settings["barbarians"]["attack_count"] = self.barb_count_spin.value()
-        
+        logger.info("Task configuration saved")
         QMessageBox.information(self, "Settings Saved", "Task configuration settings saved successfully!")
-    
-    def save_general_settings(self):
-        """Save general bot behavior settings"""
-        self.bot.humanizer.min_action_delay = self.min_delay_spin.value()
-        self.bot.humanizer.max_action_delay = self.max_delay_spin.value()
-        
-        QMessageBox.information(self, "Settings Saved", "General settings saved successfully!")
-    
-    def refresh_statistics(self):
-        """Refresh and display current session statistics"""
-        stats = self.bot.logger.get_statistics_summary()
-        
-        stats_text = f"""
-Session ID: {stats['session_id']}
-Duration: {stats['duration_formatted']}
-Total Actions: {stats['total_actions']:,}
-Success Rate: {stats['success_rate_formatted']}
-
-Resources Gathered:
-  Food: {stats['resources_gathered']['food']:,}
-  Wood: {stats['resources_gathered']['wood']:,}
-  Stone: {stats['resources_gathered']['stone']:,}
-  Gold: {stats['resources_gathered']['gold']:,}
-
-Troops Trained:
-  Infantry: {stats['troops_trained']['infantry']:,}
-  Cavalry: {stats['troops_trained']['cavalry']:,}
-  Archer: {stats['troops_trained']['archer']:,}
-  Siege: {stats['troops_trained']['siege']:,}
-
-Other Activities:
-  Buildings Upgraded: {stats['buildings_upgraded']:,}
-  Researches Started: {stats['researches_started']:,}
-  Barbarians Killed: {stats['barbarians_killed']:,}
-  Gathering Trips: {stats['gathering_trips']:,}
-  Alliance Helps: {stats['alliance_helps']:,}
-  Daily Quests: {stats['daily_quests_completed']:,}
-  Chests Collected: {stats['chests_collected']:,}
-
-Issues:
-  Errors: {stats['total_errors']:,}
-  Warnings: {stats['total_warnings']:,}
-"""
-        self.stats_text.setText(stats_text)
-    
-    def export_statistics(self):
-        """Export statistics to Excel file"""
-        filename, _ = QFileDialog.getSaveFileName(
-            self, "Export Statistics to Excel", "", "Excel Files (*.xlsx)"
-        )
-        if filename:
-            success = self.bot.logger.export_to_excel(filename)
-            if success:
-                QMessageBox.information(self, "Export Success", 
-                                      f"Statistics exported to: {filename}")
-            else:
-                QMessageBox.warning(self, "Export Failed", 
-                                  "Failed to export statistics to Excel")
     
     def clear_logs(self):
         """Clear the log display"""
-        self.log_text.clear_logs()
+        self.log_viewer.clear_logs()
         self.statusBar().showMessage("Logs cleared")
+    
+    def save_logs(self):
+        """Save logs to file"""
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save Logs", "", "Text Files (*.txt);;All Files (*)"
+        )
+        if filename:
+            try:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(self.log_viewer.toPlainText())
+                QMessageBox.information(self, "Success", f"Logs saved to {filename}")
+                logger.info(f"Logs saved to {filename}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save logs: {e}")
+    
+    def update_status(self):
+        """Update status labels periodically"""
+        if self.bot.running:
+            # Update current task
+            if self.bot.current_task:
+                task_name = self.bot.current_task.value.replace("_", " ").title()
+                self.current_task_label.setText(f"Current Task: {task_name}")
+            else:
+                self.current_task_label.setText("Current Task: Idle")
+            
+            # Update action count
+            total_actions = self.bot.logger.stats.total_actions
+            self.actions_label.setText(f"Actions: {total_actions}")
+            
+            # Update uptime
+            duration = self.bot.logger.get_session_duration()
+            hours, remainder = divmod(int(duration.total_seconds()), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            self.uptime_label.setText(f"Uptime: {hours:02d}:{minutes:02d}:{seconds:02d}")
     
     def show_license_info(self):
         """Display license information dialog"""
@@ -817,12 +923,16 @@ Hardware ID: {info['hardware_id']}
                 self.bot.stop()
                 if self.gui_logger_handler:
                     remove_gui_logging(self.gui_logger_handler)
+                if self.update_timer:
+                    self.update_timer.stop()
                 event.accept()
             else:
                 event.ignore()
         else:
             if self.gui_logger_handler:
                 remove_gui_logging(self.gui_logger_handler)
+            if self.update_timer:
+                self.update_timer.stop()
             event.accept()
 
 
