@@ -43,7 +43,7 @@ Advanced automation bot for Rise of Kingdoms on BlueStacks with human-like behav
 ### Manual Installation
 ```bash
 # Clone repository
-git clone https://github.com/yourrepo/rok-bot.git
+git clone https://github.com/philoh20-crypto/ROK_bot.git
 cd rok-bot
 
 # Create virtual environment

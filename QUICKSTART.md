@@ -211,10 +211,8 @@ Once you're comfortable with basic usage:
 4. Try troubleshooting steps above
 
 ### Support Channels:
-- 📧 **Email**: support@example.com
-- 💬 **Discord**: [Join Server]
-- 📖 **Docs**: [Full Documentation]
-- 🐛 **Bug Reports**: [GitHub Issues]
+- 📧 **Email**: andreasphiloh20@gmail.com
+
 
 ## ✅ Success Checklist
 
